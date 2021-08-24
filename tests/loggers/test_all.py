@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import contextlib
 import inspect
 import os
 import pickle
@@ -37,6 +38,25 @@ from tests.helpers.runif import RunIf
 from tests.loggers.test_comet import _patch_comet_atexit
 from tests.loggers.test_mlflow import mock_mlflow_run_creation
 
+LOGGER_CTX_MANAGERS = (
+    mock.patch("pytorch_lightning.loggers.comet.comet_ml"),
+    mock.patch("pytorch_lightning.loggers.comet.CometOfflineExperiment"),
+    mock.patch("pytorch_lightning.loggers.mlflow.mlflow"),
+    mock.patch("pytorch_lightning.loggers.mlflow.MlflowClient"),
+    mock.patch("pytorch_lightning.loggers.neptune.neptune"),
+    mock.patch("pytorch_lightning.loggers.test_tube.Experiment"),
+    mock.patch("pytorch_lightning.loggers.wandb.wandb"),
+)
+ALL_LOGGER_CLASSES = (
+    CometLogger,
+    CSVLogger,
+    MLFlowLogger,
+    NeptuneLogger,
+    TensorBoardLogger,
+    TestTubeLogger,
+    WandbLogger,
+)
+
 
 def _get_logger_args(logger_class, save_dir):
     logger_args = {}
@@ -56,32 +76,16 @@ def _instantiate_logger(logger_class, save_dir, **override_kwargs):
     return logger
 
 
-def test_loggers_fit_test_all(tmpdir, monkeypatch):
+@pytest.mark.parametrize(
+    "logger_class",
+    ALL_LOGGER_CLASSES
+)
+def test_loggers_fit_test_all(tmpdir, monkeypatch, logger_class):
     """Verify that basic functionality of all loggers."""
-
-    _test_loggers_fit_test(tmpdir, TensorBoardLogger)
-
-    with mock.patch("pytorch_lightning.loggers.comet.comet_ml"), mock.patch(
-        "pytorch_lightning.loggers.comet.CometOfflineExperiment"
-    ):
-        _patch_comet_atexit(monkeypatch)
-        _test_loggers_fit_test(tmpdir, CometLogger)
-
-    with mock.patch("pytorch_lightning.loggers.mlflow.mlflow"), mock.patch(
-        "pytorch_lightning.loggers.mlflow.MlflowClient"
-    ):
-        _test_loggers_fit_test(tmpdir, MLFlowLogger)
-
-    with mock.patch("pytorch_lightning.loggers.neptune.neptune"):
-        _test_loggers_fit_test(tmpdir, NeptuneLogger)
-
-    with mock.patch("pytorch_lightning.loggers.test_tube.Experiment"):
-        _test_loggers_fit_test(tmpdir, TestTubeLogger)
-
-    with mock.patch("pytorch_lightning.loggers.wandb.wandb") as wandb:
-        wandb.run = None
-        wandb.init().step = 0
-        _test_loggers_fit_test(tmpdir, WandbLogger)
+    with contextlib.ExitStack() as stack:
+        for mgr in LOGGER_CTX_MANAGERS:
+            stack.enter_context(mgr)
+        _test_loggers_fit_test(tmpdir, logger_class)
 
 
 def _test_loggers_fit_test(tmpdir, logger_class):
@@ -145,7 +149,7 @@ def _test_loggers_fit_test(tmpdir, logger_class):
         expected = [
             (0, ["hp_metric"]),
             (0, ["epoch", "train_some_val"]),
-            (0, ["early_stop_on", "epoch", "val_loss"]),
+            (0, ["early_stop_on", "epoch", "val_acc", "val_loss"]),
             (0, ["hp_metric"]),
             (1, ["epoch", "test_loss"]),
         ]
@@ -153,7 +157,7 @@ def _test_loggers_fit_test(tmpdir, logger_class):
     else:
         expected = [
             (0, ["epoch", "train_some_val"]),
-            (0, ["early_stop_on", "epoch", "val_loss"]),
+            (0, ["early_stop_on", "epoch", "val_acc", "val_loss"]),
             (1, ["epoch", "test_loss"]),
         ]
         assert log_metric_names == expected
@@ -174,12 +178,9 @@ def _test_loggers_fit_test(tmpdir, logger_class):
 def test_loggers_save_dir_and_weights_save_path_all(tmpdir, monkeypatch, logger_class):
     """Test the combinations of save_dir, weights_save_path and default_root_dir."""
 
-    pl_logs = "pytorch_lightning.loggers"
-    with mock.patch(pl_logs + ".comet.comet_ml"), mock.patch(pl_logs + ".comet.CometOfflineExperiment"), mock.patch(
-        pl_logs + ".mlflow.mlflow"
-    ), mock.patch(pl_logs + ".mlflow.MlflowClient"), mock.patch(pl_logs + ".test_tube.Experiment"), mock.patch(
-        pl_logs + ".wandb.wandb"
-    ):
+    with contextlib.ExitStack() as stack:
+        for mgr in LOGGER_CTX_MANAGERS:
+            stack.enter_context(mgr)
         _patch_comet_atexit(monkeypatch)
         _test_loggers_save_dir_and_weights_save_path(tmpdir, logger_class)
 
@@ -206,7 +207,7 @@ def _test_loggers_save_dir_and_weights_save_path(tmpdir, logger_class):
     trainer = Trainer(**trainer_args, logger=logger, weights_save_path=weights_save_path)
     trainer.fit(model)
     assert trainer.weights_save_path == trainer.default_root_dir
-    assert trainer.checkpoint_callback.dirpath == os.path.join(logger.save_dir, "name", "version", "checkpoints")
+    assert trainer.checkpoint_callback.dirpath == os.path.join(str(logger.save_dir), "name", "version", "checkpoints")
     assert trainer.default_root_dir == tmpdir
 
     # with weights_save_path given, the logger path and checkpoint path should be different
@@ -231,15 +232,7 @@ def _test_loggers_save_dir_and_weights_save_path(tmpdir, logger_class):
 
 @pytest.mark.parametrize(
     "logger_class",
-    [
-        CometLogger,
-        CSVLogger,
-        MLFlowLogger,
-        NeptuneLogger,
-        TensorBoardLogger,
-        TestTubeLogger,
-        # The WandbLogger gets tested for pickling in its own test.
-    ],
+    ALL_LOGGER_CLASSES
 )
 def test_loggers_pickle_all(tmpdir, monkeypatch, logger_class):
     """Test that the logger objects can be pickled.
