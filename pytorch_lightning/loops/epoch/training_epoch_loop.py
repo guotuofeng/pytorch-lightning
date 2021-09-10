@@ -17,6 +17,7 @@ import torch
 
 from pytorch_lightning import loops  # import as loops to avoid circular imports
 from pytorch_lightning.loops.batch import TrainingBatchLoop
+from pytorch_lightning.loops.batch.training_batch_loop import _OUTPUTS_TYPE as _BATCH_OUTPUTS_TYPE
 from pytorch_lightning.loops.optimization.closure import ClosureResult
 from pytorch_lightning.loops.utilities import _prepare_dataloader_iter
 from pytorch_lightning.trainer.connectors.logger_connector.result import ResultCollection
@@ -25,8 +26,10 @@ from pytorch_lightning.utilities.exceptions import MisconfigurationException
 from pytorch_lightning.utilities.model_helpers import is_overridden
 from pytorch_lightning.utilities.types import STEP_OUTPUT
 
+_OUTPUTS_TYPE = List[_BATCH_OUTPUTS_TYPE]
 
-class TrainingEpochLoop(loops.Loop):
+
+class TrainingEpochLoop(loops.Loop[_OUTPUTS_TYPE]):
     """Runs over all batches in a dataloader (one epoch).
 
     Args:
@@ -52,7 +55,7 @@ class TrainingEpochLoop(loops.Loop):
         self.val_loop: Optional["loops.EvaluationLoop"] = None
 
         self._results = ResultCollection(training=True)
-        self._epoch_output: Optional[List[List[STEP_OUTPUT]]] = None
+        self._epoch_output: _OUTPUTS_TYPE = []
 
     @property
     def total_batch_idx(self) -> int:
@@ -91,16 +94,14 @@ class TrainingEpochLoop(loops.Loop):
 
     def reset(self) -> None:
         """Resets the internal state of the loop for a new run."""
-        assert self.batch_loop is not None
-        assert self.batch_loop.optimizer_loop is not None
         self.is_last_batch = False
-
-        # track epoch output
-        self._epoch_output = [[] for _ in range(self.batch_loop.num_active_optimizers(self.total_batch_idx))]
+        self._epoch_output = []
 
         if not self.restarting:
             self.batch_progress.current.reset()
             self.scheduler_progress.current.reset()
+            assert self.batch_loop is not None
+            assert self.batch_loop.optimizer_loop is not None
             self.batch_loop.optimizer_loop.optim_progress.reset_on_epoch()
 
     def on_run_start(self, dataloader_iter: Iterator, **kwargs: Any) -> None:
@@ -146,8 +147,7 @@ class TrainingEpochLoop(loops.Loop):
         if self._num_training_batches_reached(is_last):
             self.update_lr_schedulers("epoch", update_plateau_schedulers=False)
 
-        batch_end_outputs = [opt_idx_out for opt_idx_out in batch_output.training_step_output if len(opt_idx_out)]
-        processed_batch_end_outputs = self._prepare_outputs(batch_end_outputs, batch_mode=True)
+        processed_batch_end_outputs = self._prepare_outputs(batch_output.outputs, batch_mode=True)
 
         # hook
         self.trainer.call_hook("on_train_batch_end", processed_batch_end_outputs, batch, self.batch_idx, 0)
@@ -157,7 +157,7 @@ class TrainingEpochLoop(loops.Loop):
         self.batch_progress.increment_completed()
 
         # figure out what to track for epoch end
-        self._track_epoch_end_reduce_metrics(self._epoch_output, batch_end_outputs)
+        self._track_epoch_end_reduce_metrics(self._epoch_output, batch_output.outputs)
 
         # -----------------------------------------
         # SAVE METRICS TO LOGGERS AND PROGRESS_BAR
@@ -312,15 +312,16 @@ class TrainingEpochLoop(loops.Loop):
             for batch_outputs in opt_outputs:
                 processed_tbptt_outputs = []
 
-                if isinstance(batch_outputs, ClosureResult):
-                    batch_outputs = [batch_outputs]
+                # if isinstance(batch_outputs, ClosureResult):
+                #    batch_outputs = [batch_outputs]
 
-                for tbptt_output in batch_outputs:
-                    out = {}
-                    if tbptt_output.loss is not None:
-                        out["loss"] = tbptt_output.loss
-                    out.update(tbptt_output.extra)
-                    processed_tbptt_outputs.append(out)
+                # for tbptt_output in batch_outputs:
+                #    out = {}
+                #    if tbptt_output.loss is not None:
+                #        out["loss"] = tbptt_output.loss
+                #    out.update(tbptt_output.extra)
+                #    if out:
+                #        processed_tbptt_outputs.append(out)
 
                 # if there was only one tbptt step then we can collapse that dimension
                 if len(processed_tbptt_outputs) == 1:
